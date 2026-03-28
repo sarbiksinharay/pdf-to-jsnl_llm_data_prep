@@ -5,7 +5,7 @@ const nextConfig = {
   },
   experimental: {
     // Remove if not using Server Components
-    serverComponentsExternalPackages: ['mongodb'],
+    serverComponentsExternalPackages: ['mongodb', 'pdfjs-dist'],
   },
   webpack(config, { dev }) {
     if (dev) {

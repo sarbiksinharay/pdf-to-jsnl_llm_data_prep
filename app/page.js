@@ -308,9 +308,13 @@ export default function App() {
                     )}
                   </span>
                   <span className="font-mono">
-                    {progress.processedPages}/{progress.totalPages} pages
-                    <span className="text-zinc-600 mx-1.5">&middot;</span>
                     {progress.processedFiles}/{progress.totalFiles} files
+                    {progress.totalPages > 0 && (
+                      <>
+                        <span className="text-zinc-600 mx-1.5">&middot;</span>
+                        {progress.processedPages}/{progress.totalPages} pages
+                      </>
+                    )}
                   </span>
                 </div>
               </div>

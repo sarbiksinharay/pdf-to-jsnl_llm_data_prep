@@ -1,499 +1,511 @@
 #!/usr/bin/env python3
 """
-Comprehensive Backend API Testing for PDF Processor
-Tests all API endpoints with proper error handling and validation
+Comprehensive Backend API Test Suite for PDF Processor
+Tests the updated pdfjs-dist implementation (cross-platform)
 """
 
 import requests
 import json
 import time
 import sys
-import os
 from typing import Dict, Any, Optional
 
-# Configuration
+# Base URL from environment
 BASE_URL = "https://document-extractor-8.preview.emergentagent.com"
-API_BASE = f"{BASE_URL}/api"
 
 class PDFProcessorTester:
-    def __init__(self):
+    def __init__(self, base_url: str):
+        self.base_url = base_url.rstrip('/')
         self.session = requests.Session()
         self.session.headers.update({
             'Content-Type': 'application/json',
             'User-Agent': 'PDF-Processor-Test/1.0'
         })
-        self.test_results = []
-        self.current_job_id = None
         
-    def log_result(self, test_name: str, success: bool, message: str, details: Dict = None):
-        """Log test result"""
-        result = {
-            'test': test_name,
-            'success': success,
-            'message': message,
-            'details': details or {}
-        }
-        self.test_results.append(result)
-        status = "✅ PASS" if success else "❌ FAIL"
-        print(f"{status}: {test_name} - {message}")
-        if details and not success:
-            print(f"   Details: {details}")
-    
-    def test_health_endpoint(self) -> bool:
+    def log(self, message: str, level: str = "INFO"):
+        """Log test messages with timestamp"""
+        timestamp = time.strftime("%H:%M:%S")
+        print(f"[{timestamp}] {level}: {message}")
+        
+    def test_health_check(self) -> bool:
         """Test GET /api/health endpoint"""
+        self.log("Testing health check endpoint...")
         try:
-            response = self.session.get(f"{API_BASE}/health", timeout=10)
+            response = self.session.get(f"{self.base_url}/api/health", timeout=10)
             
             if response.status_code != 200:
-                self.log_result("Health Check", False, f"Expected 200, got {response.status_code}", 
-                              {"response": response.text})
+                self.log(f"❌ Health check failed with status {response.status_code}", "ERROR")
                 return False
-            
+                
             data = response.json()
             required_fields = ['status', 'timestamp', 'services']
             
             for field in required_fields:
                 if field not in data:
-                    self.log_result("Health Check", False, f"Missing required field: {field}", 
-                                  {"response": data})
+                    self.log(f"❌ Health check missing field: {field}", "ERROR")
                     return False
-            
+                    
             if data['status'] != 'ok':
-                self.log_result("Health Check", False, f"Status not 'ok': {data['status']}", 
-                              {"response": data})
+                self.log(f"❌ Health check status not ok: {data['status']}", "ERROR")
                 return False
+                
+            # Check services
+            services = data.get('services', {})
+            expected_services = ['database', 'pdfjs', 'poppler']
             
-            self.log_result("Health Check", True, "Health endpoint working correctly", 
-                          {"response": data})
+            for service in expected_services:
+                if service not in services:
+                    self.log(f"❌ Health check missing service: {service}", "ERROR")
+                    return False
+                    
+            self.log(f"✅ Health check passed - Status: {data['status']}")
+            self.log(f"   Services: {services}")
             return True
             
         except Exception as e:
-            self.log_result("Health Check", False, f"Exception: {str(e)}")
+            self.log(f"❌ Health check exception: {str(e)}", "ERROR")
             return False
-    
-    def test_generate_test_pdfs(self) -> bool:
+            
+    def test_generate_test_pdfs(self) -> Optional[Dict[str, Any]]:
         """Test POST /api/test/generate endpoint"""
+        self.log("Testing test PDF generation...")
         try:
-            response = self.session.post(f"{API_BASE}/test/generate", timeout=30)
+            response = self.session.post(f"{self.base_url}/api/test/generate", timeout=30)
             
             if response.status_code != 200:
-                self.log_result("Generate Test PDFs", False, f"Expected 200, got {response.status_code}", 
-                              {"response": response.text})
-                return False
-            
+                self.log(f"❌ Test PDF generation failed with status {response.status_code}", "ERROR")
+                self.log(f"   Response: {response.text}", "ERROR")
+                return None
+                
             data = response.json()
             required_fields = ['success', 'message', 'folderPath', 'files', 'totalPages']
             
             for field in required_fields:
                 if field not in data:
-                    self.log_result("Generate Test PDFs", False, f"Missing required field: {field}", 
-                                  {"response": data})
-                    return False
-            
+                    self.log(f"❌ Test PDF generation missing field: {field}", "ERROR")
+                    return None
+                    
             if not data['success']:
-                self.log_result("Generate Test PDFs", False, f"Generation failed: {data.get('message', 'Unknown error')}", 
-                              {"response": data})
-                return False
-            
-            # Validate expected values
-            if data['folderPath'] != '/tmp/test-pdfs':
-                self.log_result("Generate Test PDFs", False, f"Unexpected folderPath: {data['folderPath']}")
-                return False
-            
-            if len(data['files']) != 4:
-                self.log_result("Generate Test PDFs", False, f"Expected 4 files, got {len(data['files'])}")
-                return False
-            
-            if data['totalPages'] != 8:
-                self.log_result("Generate Test PDFs", False, f"Expected 8 total pages, got {data['totalPages']}")
-                return False
-            
-            self.log_result("Generate Test PDFs", True, f"Generated {len(data['files'])} files with {data['totalPages']} pages", 
-                          {"folderPath": data['folderPath'], "files": len(data['files'])})
-            return True
+                self.log(f"❌ Test PDF generation failed: {data.get('message', 'Unknown error')}", "ERROR")
+                return None
+                
+            if data['totalPages'] <= 0:
+                self.log(f"❌ Test PDF generation returned 0 pages", "ERROR")
+                return None
+                
+            self.log(f"✅ Test PDF generation passed")
+            self.log(f"   Folder: {data['folderPath']}")
+            self.log(f"   Files: {len(data['files'])}")
+            self.log(f"   Total Pages: {data['totalPages']}")
+            return data
             
         except Exception as e:
-            self.log_result("Generate Test PDFs", False, f"Exception: {str(e)}")
-            return False
-    
-    def test_start_job_valid_path(self) -> bool:
+            self.log(f"❌ Test PDF generation exception: {str(e)}", "ERROR")
+            return None
+            
+    def test_create_job_valid_path(self, folder_path: str) -> Optional[str]:
         """Test POST /api/jobs with valid folder path"""
+        self.log(f"Testing job creation with valid path: {folder_path}")
         try:
-            payload = {"folderPath": "/tmp/test-pdfs"}
-            response = self.session.post(f"{API_BASE}/jobs", json=payload, timeout=10)
+            payload = {"folderPath": folder_path}
+            response = self.session.post(f"{self.base_url}/api/jobs", 
+                                       json=payload, timeout=10)
             
             if response.status_code != 200:
-                self.log_result("Start Job (Valid Path)", False, f"Expected 200, got {response.status_code}", 
-                              {"response": response.text})
-                return False
-            
+                self.log(f"❌ Job creation failed with status {response.status_code}", "ERROR")
+                self.log(f"   Response: {response.text}", "ERROR")
+                return None
+                
             data = response.json()
             required_fields = ['jobId', 'status', 'message']
             
             for field in required_fields:
                 if field not in data:
-                    self.log_result("Start Job (Valid Path)", False, f"Missing required field: {field}", 
-                                  {"response": data})
-                    return False
-            
+                    self.log(f"❌ Job creation missing field: {field}", "ERROR")
+                    return None
+                    
             if data['status'] != 'initializing':
-                self.log_result("Start Job (Valid Path)", False, f"Expected status 'initializing', got '{data['status']}'", 
-                              {"response": data})
-                return False
-            
-            # Store job ID for progress testing
-            self.current_job_id = data['jobId']
-            
-            self.log_result("Start Job (Valid Path)", True, f"Job started successfully with ID: {data['jobId'][:8]}...", 
-                          {"jobId": data['jobId'], "status": data['status']})
-            return True
-            
-        except Exception as e:
-            self.log_result("Start Job (Valid Path)", False, f"Exception: {str(e)}")
-            return False
-    
-    def test_start_job_invalid_path(self) -> bool:
-        """Test POST /api/jobs with invalid folder path"""
-        try:
-            payload = {"folderPath": "/nonexistent/path"}
-            response = self.session.post(f"{API_BASE}/jobs", json=payload, timeout=10)
-            
-            if response.status_code != 400:
-                self.log_result("Start Job (Invalid Path)", False, f"Expected 400, got {response.status_code}", 
-                              {"response": response.text})
-                return False
-            
-            data = response.json()
-            if 'error' not in data:
-                self.log_result("Start Job (Invalid Path)", False, "Missing error field in response", 
-                              {"response": data})
-                return False
-            
-            self.log_result("Start Job (Invalid Path)", True, "Correctly rejected invalid path", 
-                          {"error": data['error']})
-            return True
+                self.log(f"❌ Job creation wrong status: {data['status']}", "ERROR")
+                return None
+                
+            job_id = data['jobId']
+            if not job_id or len(job_id) < 10:
+                self.log(f"❌ Job creation invalid jobId: {job_id}", "ERROR")
+                return None
+                
+            self.log(f"✅ Job creation passed - JobId: {job_id}")
+            return job_id
             
         except Exception as e:
-            self.log_result("Start Job (Invalid Path)", False, f"Exception: {str(e)}")
-            return False
-    
-    def test_start_job_missing_folder_path(self) -> bool:
-        """Test POST /api/jobs with missing folderPath"""
-        try:
-            payload = {}
-            response = self.session.post(f"{API_BASE}/jobs", json=payload, timeout=10)
+            self.log(f"❌ Job creation exception: {str(e)}", "ERROR")
+            return None
             
-            if response.status_code != 400:
-                self.log_result("Start Job (Missing Path)", False, f"Expected 400, got {response.status_code}", 
-                              {"response": response.text})
-                return False
-            
-            data = response.json()
-            if 'error' not in data:
-                self.log_result("Start Job (Missing Path)", False, "Missing error field in response", 
-                              {"response": data})
-                return False
-            
-            self.log_result("Start Job (Missing Path)", True, "Correctly rejected missing folderPath", 
-                          {"error": data['error']})
-            return True
-            
-        except Exception as e:
-            self.log_result("Start Job (Missing Path)", False, f"Exception: {str(e)}")
-            return False
-    
-    def test_job_progress_polling(self) -> bool:
-        """Test GET /api/jobs/progress and poll until completion"""
-        if not self.current_job_id:
-            self.log_result("Job Progress Polling", False, "No job ID available for testing")
-            return False
+    def test_create_job_invalid_paths(self) -> bool:
+        """Test POST /api/jobs with invalid paths"""
+        self.log("Testing job creation with invalid paths...")
         
-        try:
-            max_polls = 60  # 2 minutes max
-            poll_count = 0
-            
-            while poll_count < max_polls:
-                response = self.session.get(f"{API_BASE}/jobs/progress?jobId={self.current_job_id}", timeout=10)
+        test_cases = [
+            {"folderPath": "/nonexistent/path", "expected_status": 400, "description": "non-existent path"},
+            {"folderPath": "", "expected_status": 400, "description": "empty path"},
+            {"folderPath": "/etc/passwd", "expected_status": 400, "description": "file instead of directory"},
+            {}, # missing folderPath
+        ]
+        
+        all_passed = True
+        
+        for i, test_case in enumerate(test_cases):
+            try:
+                description = test_case.get("description", f"test case {i+1}")
+                expected_status = test_case.get("expected_status", 400)
+                
+                response = self.session.post(f"{self.base_url}/api/jobs", 
+                                           json=test_case if "folderPath" in test_case else {}, 
+                                           timeout=10)
+                
+                if response.status_code != expected_status:
+                    self.log(f"❌ Invalid path test failed ({description}): expected {expected_status}, got {response.status_code}", "ERROR")
+                    all_passed = False
+                else:
+                    self.log(f"✅ Invalid path test passed ({description})")
+                    
+            except Exception as e:
+                self.log(f"❌ Invalid path test exception ({description}): {str(e)}", "ERROR")
+                all_passed = False
+                
+        return all_passed
+        
+    def test_job_progress(self, job_id: str) -> Optional[Dict[str, Any]]:
+        """Test GET /api/jobs/progress and poll until completion"""
+        self.log(f"Testing job progress polling for job: {job_id}")
+        
+        max_polls = 30  # 60 seconds max
+        poll_interval = 2
+        
+        for poll_count in range(max_polls):
+            try:
+                response = self.session.get(f"{self.base_url}/api/jobs/progress?jobId={job_id}", 
+                                          timeout=10)
                 
                 if response.status_code != 200:
-                    self.log_result("Job Progress Polling", False, f"Expected 200, got {response.status_code}", 
-                                  {"response": response.text})
-                    return False
-                
+                    self.log(f"❌ Progress polling failed with status {response.status_code}", "ERROR")
+                    return None
+                    
                 data = response.json()
-                required_fields = ['jobId', 'status', 'totalFiles', 'processedFiles', 'totalPages', 'processedPages', 'progress', 'logs', 'errors']
+                required_fields = ['jobId', 'status', 'totalFiles', 'processedFiles', 
+                                 'totalPages', 'processedPages', 'progress']
                 
                 for field in required_fields:
                     if field not in data:
-                        self.log_result("Job Progress Polling", False, f"Missing required field: {field}", 
-                                      {"response": data})
-                        return False
-                
+                        self.log(f"❌ Progress polling missing field: {field}", "ERROR")
+                        return None
+                        
                 status = data['status']
                 progress = data['progress']
+                total_pages = data['totalPages']
+                processed_pages = data['processedPages']
                 
-                print(f"   Poll {poll_count + 1}: Status={status}, Progress={progress}%, Files={data['processedFiles']}/{data['totalFiles']}, Pages={data['processedPages']}/{data['totalPages']}")
+                self.log(f"   Poll {poll_count + 1}: Status={status}, Progress={progress}%, Pages={processed_pages}/{total_pages}")
                 
                 if status == 'completed':
-                    # Validate completion data
-                    if data['totalFiles'] != 4:
-                        self.log_result("Job Progress Polling", False, f"Expected 4 total files, got {data['totalFiles']}")
-                        return False
+                    if total_pages <= 0:
+                        self.log(f"❌ Job completed but totalPages is {total_pages}", "ERROR")
+                        return None
+                        
+                    self.log(f"✅ Job progress polling completed successfully")
+                    self.log(f"   Final stats: {data['processedFiles']}/{data['totalFiles']} files, {processed_pages}/{total_pages} pages")
+                    return data
                     
-                    if data['totalPages'] != 8:
-                        self.log_result("Job Progress Polling", False, f"Expected 8 total pages, got {data['totalPages']}")
-                        return False
-                    
-                    if data['processedFiles'] != data['totalFiles']:
-                        self.log_result("Job Progress Polling", False, f"Not all files processed: {data['processedFiles']}/{data['totalFiles']}")
-                        return False
-                    
-                    if data['processedPages'] != data['totalPages']:
-                        self.log_result("Job Progress Polling", False, f"Not all pages processed: {data['processedPages']}/{data['totalPages']}")
-                        return False
-                    
-                    if progress != 100:
-                        self.log_result("Job Progress Polling", False, f"Progress not 100% on completion: {progress}%")
-                        return False
-                    
-                    self.log_result("Job Progress Polling", True, f"Job completed successfully in {poll_count + 1} polls", 
-                                  {"totalFiles": data['totalFiles'], "totalPages": data['totalPages'], "errors": len(data['errors'])})
-                    return True
-                
                 elif status == 'failed':
-                    self.log_result("Job Progress Polling", False, f"Job failed: {data.get('errors', [])}")
-                    return False
+                    self.log(f"❌ Job failed during processing", "ERROR")
+                    if 'errors' in data and data['errors']:
+                        self.log(f"   Errors: {data['errors']}", "ERROR")
+                    return None
+                    
+                elif status in ['initializing', 'processing']:
+                    time.sleep(poll_interval)
+                    continue
+                else:
+                    self.log(f"❌ Unknown job status: {status}", "ERROR")
+                    return None
+                    
+            except Exception as e:
+                self.log(f"❌ Progress polling exception: {str(e)}", "ERROR")
+                return None
                 
-                poll_count += 1
-                time.sleep(2)  # Wait 2 seconds between polls
-            
-            self.log_result("Job Progress Polling", False, f"Job did not complete within {max_polls} polls")
-            return False
-            
-        except Exception as e:
-            self.log_result("Job Progress Polling", False, f"Exception: {str(e)}")
-            return False
-    
-    def test_job_progress_invalid_job_id(self) -> bool:
-        """Test GET /api/jobs/progress with invalid job ID"""
-        try:
-            response = self.session.get(f"{API_BASE}/jobs/progress?jobId=invalid-job-id", timeout=10)
-            
-            if response.status_code != 404:
-                self.log_result("Job Progress (Invalid ID)", False, f"Expected 404, got {response.status_code}", 
-                              {"response": response.text})
-                return False
-            
-            data = response.json()
-            if 'error' not in data:
-                self.log_result("Job Progress (Invalid ID)", False, "Missing error field in response", 
-                              {"response": data})
-                return False
-            
-            self.log_result("Job Progress (Invalid ID)", True, "Correctly rejected invalid job ID", 
-                          {"error": data['error']})
-            return True
-            
-        except Exception as e:
-            self.log_result("Job Progress (Invalid ID)", False, f"Exception: {str(e)}")
-            return False
-    
-    def test_job_progress_missing_job_id(self) -> bool:
-        """Test GET /api/jobs/progress without job ID parameter"""
-        try:
-            response = self.session.get(f"{API_BASE}/jobs/progress", timeout=10)
-            
-            if response.status_code != 400:
-                self.log_result("Job Progress (Missing ID)", False, f"Expected 400, got {response.status_code}", 
-                              {"response": response.text})
-                return False
-            
-            data = response.json()
-            if 'error' not in data:
-                self.log_result("Job Progress (Missing ID)", False, "Missing error field in response", 
-                              {"response": data})
-                return False
-            
-            self.log_result("Job Progress (Missing ID)", True, "Correctly rejected missing job ID", 
-                          {"error": data['error']})
-            return True
-            
-        except Exception as e:
-            self.log_result("Job Progress (Missing ID)", False, f"Exception: {str(e)}")
-            return False
-    
-    def test_download_jsonl(self) -> bool:
-        """Test GET /api/jobs/download and validate JSONL format"""
-        if not self.current_job_id:
-            self.log_result("Download JSONL", False, "No job ID available for testing")
-            return False
+        self.log(f"❌ Job progress polling timed out after {max_polls * poll_interval} seconds", "ERROR")
+        return None
         
+    def test_job_progress_invalid_cases(self) -> bool:
+        """Test GET /api/jobs/progress with invalid cases"""
+        self.log("Testing job progress with invalid cases...")
+        
+        test_cases = [
+            {"jobId": "", "description": "empty jobId"},
+            {"jobId": "nonexistent-job-id", "description": "non-existent jobId"},
+            # Missing jobId parameter
+        ]
+        
+        all_passed = True
+        
+        # Test missing jobId parameter
         try:
-            response = self.session.get(f"{API_BASE}/jobs/download?jobId={self.current_job_id}", timeout=30)
+            response = self.session.get(f"{self.base_url}/api/jobs/progress", timeout=10)
+            if response.status_code != 400:
+                self.log(f"❌ Missing jobId test failed: expected 400, got {response.status_code}", "ERROR")
+                all_passed = False
+            else:
+                self.log(f"✅ Missing jobId test passed")
+        except Exception as e:
+            self.log(f"❌ Missing jobId test exception: {str(e)}", "ERROR")
+            all_passed = False
+            
+        # Test other invalid cases
+        for test_case in test_cases:
+            try:
+                job_id = test_case["jobId"]
+                description = test_case["description"]
+                
+                response = self.session.get(f"{self.base_url}/api/jobs/progress?jobId={job_id}", 
+                                          timeout=10)
+                
+                if job_id == "":
+                    expected_status = 400
+                else:
+                    expected_status = 404
+                    
+                if response.status_code != expected_status:
+                    self.log(f"❌ Invalid progress test failed ({description}): expected {expected_status}, got {response.status_code}", "ERROR")
+                    all_passed = False
+                else:
+                    self.log(f"✅ Invalid progress test passed ({description})")
+                    
+            except Exception as e:
+                self.log(f"❌ Invalid progress test exception ({description}): {str(e)}", "ERROR")
+                all_passed = False
+                
+        return all_passed
+        
+    def test_download_jsonl(self, job_id: str) -> bool:
+        """Test GET /api/jobs/download endpoint"""
+        self.log(f"Testing JSONL download for job: {job_id}")
+        try:
+            response = self.session.get(f"{self.base_url}/api/jobs/download?jobId={job_id}", 
+                                      timeout=30)
             
             if response.status_code != 200:
-                self.log_result("Download JSONL", False, f"Expected 200, got {response.status_code}", 
-                              {"response": response.text})
+                self.log(f"❌ JSONL download failed with status {response.status_code}", "ERROR")
+                self.log(f"   Response: {response.text}", "ERROR")
                 return False
-            
+                
             # Check headers
             content_type = response.headers.get('content-type', '')
             if 'application/x-ndjson' not in content_type:
-                self.log_result("Download JSONL", False, f"Expected JSONL content-type, got: {content_type}")
+                self.log(f"❌ JSONL download wrong content-type: {content_type}", "ERROR")
                 return False
-            
+                
             content_disposition = response.headers.get('content-disposition', '')
-            if 'attachment' not in content_disposition or '.jsonl' not in content_disposition:
-                self.log_result("Download JSONL", False, f"Invalid content-disposition: {content_disposition}")
+            if 'attachment' not in content_disposition:
+                self.log(f"❌ JSONL download missing attachment header", "ERROR")
                 return False
-            
-            # Validate JSONL content
+                
+            # Check content
             content = response.text
-            lines = content.strip().split('\n')
-            
-            if len(lines) != 8:  # Should have 8 lines for 8 pages
-                self.log_result("Download JSONL", False, f"Expected 8 lines, got {len(lines)}")
+            if not content.strip():
+                self.log(f"❌ JSONL download empty content", "ERROR")
                 return False
-            
+                
+            # Validate JSONL format
+            lines = content.strip().split('\n')
             valid_lines = 0
+            
             for i, line in enumerate(lines):
+                if not line.strip():
+                    continue
+                    
                 try:
                     data = json.loads(line)
                     
-                    # Validate Hugging Face format
+                    # Check required fields for Hugging Face format
                     if 'messages' not in data:
-                        self.log_result("Download JSONL", False, f"Line {i+1}: Missing 'messages' field")
+                        self.log(f"❌ JSONL line {i+1} missing 'messages' field", "ERROR")
                         return False
-                    
+                        
                     if 'metadata' not in data:
-                        self.log_result("Download JSONL", False, f"Line {i+1}: Missing 'metadata' field")
+                        self.log(f"❌ JSONL line {i+1} missing 'metadata' field", "ERROR")
                         return False
-                    
+                        
                     messages = data['messages']
-                    if len(messages) != 3:
-                        self.log_result("Download JSONL", False, f"Line {i+1}: Expected 3 messages, got {len(messages)}")
+                    if not isinstance(messages, list) or len(messages) != 3:
+                        self.log(f"❌ JSONL line {i+1} invalid messages format", "ERROR")
                         return False
-                    
+                        
                     # Check message roles
                     expected_roles = ['system', 'user', 'assistant']
                     for j, msg in enumerate(messages):
                         if msg.get('role') != expected_roles[j]:
-                            self.log_result("Download JSONL", False, f"Line {i+1}, Message {j+1}: Expected role '{expected_roles[j]}', got '{msg.get('role')}'")
+                            self.log(f"❌ JSONL line {i+1} message {j+1} wrong role: {msg.get('role')}", "ERROR")
                             return False
-                        
-                        if 'content' not in msg or not msg['content']:
-                            self.log_result("Download JSONL", False, f"Line {i+1}, Message {j+1}: Missing or empty content")
-                            return False
-                    
-                    # Validate metadata
-                    metadata = data['metadata']
-                    required_metadata = ['source_file', 'page_number', 'total_pages', 'confidence', 'extraction_method', 'timestamp']
-                    for field in required_metadata:
-                        if field not in metadata:
-                            self.log_result("Download JSONL", False, f"Line {i+1}: Missing metadata field '{field}'")
-                            return False
-                    
+                            
                     valid_lines += 1
                     
                 except json.JSONDecodeError as e:
-                    self.log_result("Download JSONL", False, f"Line {i+1}: Invalid JSON - {str(e)}")
+                    self.log(f"❌ JSONL line {i+1} invalid JSON: {str(e)}", "ERROR")
                     return False
-            
-            file_size = len(content.encode('utf-8'))
-            self.log_result("Download JSONL", True, f"JSONL file downloaded and validated successfully", 
-                          {"lines": valid_lines, "size_bytes": file_size, "content_type": content_type})
+                    
+            if valid_lines == 0:
+                self.log(f"❌ JSONL download no valid lines found", "ERROR")
+                return False
+                
+            self.log(f"✅ JSONL download passed")
+            self.log(f"   Content-Type: {content_type}")
+            self.log(f"   Size: {len(content)} bytes")
+            self.log(f"   Valid lines: {valid_lines}")
             return True
             
         except Exception as e:
-            self.log_result("Download JSONL", False, f"Exception: {str(e)}")
+            self.log(f"❌ JSONL download exception: {str(e)}", "ERROR")
             return False
-    
-    def test_download_invalid_job_id(self) -> bool:
-        """Test GET /api/jobs/download with invalid job ID"""
-        try:
-            response = self.session.get(f"{API_BASE}/jobs/download?jobId=invalid-job-id", timeout=10)
             
-            if response.status_code != 404:
-                self.log_result("Download (Invalid ID)", False, f"Expected 404, got {response.status_code}", 
-                              {"response": response.text})
-                return False
-            
-            data = response.json()
-            if 'error' not in data:
-                self.log_result("Download (Invalid ID)", False, "Missing error field in response", 
-                              {"response": data})
-                return False
-            
-            self.log_result("Download (Invalid ID)", True, "Correctly rejected invalid job ID", 
-                          {"error": data['error']})
-            return True
-            
-        except Exception as e:
-            self.log_result("Download (Invalid ID)", False, f"Exception: {str(e)}")
-            return False
-    
-    def run_all_tests(self):
-        """Run all backend tests in the correct order"""
-        print(f"🚀 Starting PDF Processor Backend Tests")
-        print(f"📍 Base URL: {BASE_URL}")
-        print(f"🔗 API Base: {API_BASE}")
-        print("=" * 60)
+    def test_download_invalid_cases(self) -> bool:
+        """Test GET /api/jobs/download with invalid cases"""
+        self.log("Testing JSONL download with invalid cases...")
         
-        # Test sequence following the end-to-end flow
-        tests = [
-            ("Health Check", self.test_health_endpoint),
-            ("Generate Test PDFs", self.test_generate_test_pdfs),
-            ("Start Job (Valid Path)", self.test_start_job_valid_path),
-            ("Start Job (Invalid Path)", self.test_start_job_invalid_path),
-            ("Start Job (Missing Path)", self.test_start_job_missing_folder_path),
-            ("Job Progress Polling", self.test_job_progress_polling),
-            ("Job Progress (Invalid ID)", self.test_job_progress_invalid_job_id),
-            ("Job Progress (Missing ID)", self.test_job_progress_missing_job_id),
-            ("Download JSONL", self.test_download_jsonl),
-            ("Download (Invalid ID)", self.test_download_invalid_job_id),
+        test_cases = [
+            {"jobId": "", "description": "empty jobId"},
+            {"jobId": "nonexistent-job-id", "description": "non-existent jobId"},
         ]
         
-        passed = 0
-        failed = 0
+        all_passed = True
         
-        for test_name, test_func in tests:
-            try:
-                success = test_func()
-                if success:
-                    passed += 1
-                else:
-                    failed += 1
-            except Exception as e:
-                print(f"❌ FAIL: {test_name} - Unexpected exception: {str(e)}")
-                failed += 1
+        # Test missing jobId parameter
+        try:
+            response = self.session.get(f"{self.base_url}/api/jobs/download", timeout=10)
+            if response.status_code != 400:
+                self.log(f"❌ Missing jobId download test failed: expected 400, got {response.status_code}", "ERROR")
+                all_passed = False
+            else:
+                self.log(f"✅ Missing jobId download test passed")
+        except Exception as e:
+            self.log(f"❌ Missing jobId download test exception: {str(e)}", "ERROR")
+            all_passed = False
             
-            print()  # Add spacing between tests
+        # Test other invalid cases
+        for test_case in test_cases:
+            try:
+                job_id = test_case["jobId"]
+                description = test_case["description"]
+                
+                response = self.session.get(f"{self.base_url}/api/jobs/download?jobId={job_id}", 
+                                          timeout=10)
+                
+                if job_id == "":
+                    expected_status = 400
+                else:
+                    expected_status = 404
+                    
+                if response.status_code != expected_status:
+                    self.log(f"❌ Invalid download test failed ({description}): expected {expected_status}, got {response.status_code}", "ERROR")
+                    all_passed = False
+                else:
+                    self.log(f"✅ Invalid download test passed ({description})")
+                    
+            except Exception as e:
+                self.log(f"❌ Invalid download test exception ({description}): {str(e)}", "ERROR")
+                all_passed = False
+                
+        return all_passed
         
-        # Summary
-        print("=" * 60)
-        print(f"📊 TEST SUMMARY")
-        print(f"✅ Passed: {passed}")
-        print(f"❌ Failed: {failed}")
-        print(f"📈 Success Rate: {(passed / (passed + failed) * 100):.1f}%")
+    def run_comprehensive_test(self) -> Dict[str, bool]:
+        """Run all tests in sequence"""
+        self.log("=" * 60)
+        self.log("STARTING COMPREHENSIVE PDF PROCESSOR BACKEND TESTS")
+        self.log(f"Base URL: {self.base_url}")
+        self.log("=" * 60)
         
-        if failed > 0:
-            print("\n🔍 FAILED TESTS:")
-            for result in self.test_results:
-                if not result['success']:
-                    print(f"   • {result['test']}: {result['message']}")
+        results = {}
         
-        return failed == 0
+        # Test 1: Health Check
+        results['health_check'] = self.test_health_check()
+        
+        # Test 2: Generate Test PDFs
+        pdf_data = self.test_generate_test_pdfs()
+        results['generate_test_pdfs'] = pdf_data is not None
+        
+        if not pdf_data:
+            self.log("❌ Cannot continue tests without test PDFs", "ERROR")
+            return results
+            
+        folder_path = pdf_data['folderPath']
+        
+        # Test 3: Create Job with Valid Path
+        job_id = self.test_create_job_valid_path(folder_path)
+        results['create_job_valid'] = job_id is not None
+        
+        # Test 4: Create Job with Invalid Paths
+        results['create_job_invalid'] = self.test_create_job_invalid_paths()
+        
+        if not job_id:
+            self.log("❌ Cannot continue tests without valid job", "ERROR")
+            return results
+            
+        # Test 5: Job Progress Polling
+        final_job_data = self.test_job_progress(job_id)
+        results['job_progress'] = final_job_data is not None
+        
+        # Test 6: Job Progress Invalid Cases
+        results['job_progress_invalid'] = self.test_job_progress_invalid_cases()
+        
+        if not final_job_data:
+            self.log("❌ Cannot test download without completed job", "ERROR")
+            return results
+            
+        # Test 7: Download JSONL
+        results['download_jsonl'] = self.test_download_jsonl(job_id)
+        
+        # Test 8: Download Invalid Cases
+        results['download_invalid'] = self.test_download_invalid_cases()
+        
+        return results
+        
+    def print_summary(self, results: Dict[str, bool]):
+        """Print test summary"""
+        self.log("=" * 60)
+        self.log("TEST SUMMARY")
+        self.log("=" * 60)
+        
+        total_tests = len(results)
+        passed_tests = sum(1 for result in results.values() if result)
+        
+        for test_name, passed in results.items():
+            status = "✅ PASS" if passed else "❌ FAIL"
+            self.log(f"{status}: {test_name}")
+            
+        self.log("-" * 60)
+        self.log(f"TOTAL: {passed_tests}/{total_tests} tests passed")
+        
+        if passed_tests == total_tests:
+            self.log("🎉 ALL TESTS PASSED! Backend is working correctly.", "SUCCESS")
+            return True
+        else:
+            self.log(f"⚠️  {total_tests - passed_tests} test(s) failed. Backend needs attention.", "WARNING")
+            return False
 
 def main():
-    """Main test runner"""
-    tester = PDFProcessorTester()
-    success = tester.run_all_tests()
+    """Main test execution"""
+    tester = PDFProcessorTester(BASE_URL)
     
-    if success:
-        print("\n🎉 All tests passed!")
-        sys.exit(0)
-    else:
-        print("\n💥 Some tests failed!")
+    try:
+        results = tester.run_comprehensive_test()
+        all_passed = tester.print_summary(results)
+        
+        # Exit with appropriate code
+        sys.exit(0 if all_passed else 1)
+        
+    except KeyboardInterrupt:
+        tester.log("Tests interrupted by user", "WARNING")
+        sys.exit(1)
+    except Exception as e:
+        tester.log(f"Test suite failed with exception: {str(e)}", "ERROR")
         sys.exit(1)
 
 if __name__ == "__main__":

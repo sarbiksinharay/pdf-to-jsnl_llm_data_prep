@@ -3,7 +3,7 @@ import { MongoClient } from 'mongodb';
 import { v4 as uuidv4 } from 'uuid';
 import fs from 'fs';
 import path from 'path';
-import { execSync } from 'child_process';
+import { execFileSync, execSync } from 'child_process';
 
 // ============================================================
 // DATABASE CONNECTION
@@ -29,11 +29,42 @@ if (!global.__pdfJobs) global.__pdfJobs = new Map();
 const activeJobs = global.__pdfJobs;
 
 // ============================================================
-// PDF UTILITIES (using poppler-utils system tools)
+// PDFJS-DIST INITIALIZATION (Cross-platform, pure JavaScript)
+// ============================================================
+let _pdfjsLib = null;
+
+async function getPdfJs() {
+  if (_pdfjsLib) return _pdfjsLib;
+  // Use legacy build for maximum Node.js compatibility
+  _pdfjsLib = await import('pdfjs-dist/legacy/build/pdf.mjs');
+  return _pdfjsLib;
+}
+
+// ============================================================
+// OPTIONAL: Check if poppler-utils is available (Linux/Mac)
+// If available, we use it for PDF→Image conversion
+// If not (Windows), we skip image conversion gracefully
+// ============================================================
+let _popplerAvailable = null;
+
+function isPopplerAvailable() {
+  if (_popplerAvailable !== null) return _popplerAvailable;
+  try {
+    execSync('pdftoppm -v', { encoding: 'utf-8', stdio: ['pipe', 'pipe', 'pipe'] });
+    _popplerAvailable = true;
+  } catch {
+    _popplerAvailable = false;
+  }
+  return _popplerAvailable;
+}
+
+// ============================================================
+// PDF UTILITIES
 // ============================================================
 
 /**
- * Recursively find all .pdf files in a directory
+ * Recursively find all .pdf files in a directory.
+ * Works on Windows, Linux, macOS.
  */
 function findPdfsRecursive(dirPath) {
   let results = [];
@@ -54,56 +85,30 @@ function findPdfsRecursive(dirPath) {
 }
 
 /**
- * Get PDF page count using pdfinfo (poppler-utils)
+ * Convert a single PDF page to a PNG image buffer using poppler (if available).
+ * Uses execFileSync (no shell) to handle paths with spaces/special chars.
+ * Returns null if poppler is not installed.
  */
-function getPdfPageCount(pdfPath) {
+function convertPageToImageWithPoppler(pdfPath, pageNum, outputDir) {
+  if (!isPopplerAvailable()) return null;
   try {
-    const output = execSync(`pdfinfo "${pdfPath}" 2>/dev/null`, { encoding: 'utf-8' });
-    const match = output.match(/Pages:\s+(\d+)/);
-    return match ? parseInt(match[1]) : 0;
-  } catch (err) {
-    console.error(`Error getting page count for ${pdfPath}:`, err.message);
-    return 0;
-  }
-}
+    const outputPrefix = path.join(outputDir, 'page_convert');
+    // Use execFileSync to avoid shell escaping issues with paths
+    execFileSync('pdftoppm', [
+      '-png', '-f', String(pageNum), '-l', String(pageNum),
+      '-r', '150', '-singlefile',
+      pdfPath, outputPrefix
+    ], { timeout: 30000, stdio: ['pipe', 'pipe', 'pipe'] });
 
-/**
- * Convert a single PDF page to a PNG image buffer using pdftoppm
- * This is where actual image conversion happens
- */
-function convertPageToImage(pdfPath, pageNum, outputDir) {
-  try {
-    const outputPrefix = path.join(outputDir, `page_convert`);
-    execSync(
-      `pdftoppm -png -f ${pageNum} -l ${pageNum} -r 150 -singlefile "${pdfPath}" "${outputPrefix}"`,
-      { timeout: 30000, stdio: ['pipe', 'pipe', 'pipe'] }
-    );
     const imagePath = `${outputPrefix}.png`;
     if (fs.existsSync(imagePath)) {
       const buffer = fs.readFileSync(imagePath);
-      // Clean up temp image to save memory
-      fs.unlinkSync(imagePath);
+      fs.unlinkSync(imagePath); // Clean up temp image
       return buffer;
     }
     return null;
   } catch (err) {
-    console.error(`Error converting page ${pageNum} to image:`, err.message);
     return null;
-  }
-}
-
-/**
- * Extract text from a specific PDF page using pdftotext
- */
-function extractTextFromPage(pdfPath, pageNum) {
-  try {
-    const output = execSync(
-      `pdftotext -f ${pageNum} -l ${pageNum} -layout "${pdfPath}" -`,
-      { encoding: 'utf-8', timeout: 15000, stdio: ['pipe', 'pipe', 'pipe'] }
-    );
-    return output.trim();
-  } catch (err) {
-    return '';
   }
 }
 
@@ -112,11 +117,11 @@ function extractTextFromPage(pdfPath, pageNum) {
 // ============================================================
 /**
  * extractDataFromImage - MOCK OCR/Vision API Response
- * 
+ *
  * THIS IS WHERE YOU PLUG IN YOUR ACTUAL OCR OR VISION API.
- * 
+ *
  * Integration options:
- * 
+ *
  * 1. OpenAI Vision API (GPT-4o):
  *    const response = await openai.chat.completions.create({
  *      model: 'gpt-4o',
@@ -128,26 +133,23 @@ function extractTextFromPage(pdfPath, pageNum) {
  *        ]
  *      }]
  *    });
- * 
+ *
  * 2. Google Cloud Vision API:
  *    const [result] = await visionClient.textDetection(imageBuffer);
  *    const text = result.fullTextAnnotation.text;
- * 
+ *
  * 3. Azure AI Vision:
  *    const result = await client.readInStream(imageBuffer);
- * 
+ *
  * 4. Tesseract.js (Local OCR - no API key needed):
  *    const { data: { text } } = await Tesseract.recognize(imageBuffer, 'eng');
- * 
- * @param {Buffer|null} imageBuffer - PNG image buffer of the PDF page
- * @param {string} pageText - Text extracted from the page via pdftotext
+ *
+ * @param {Buffer|null} imageBuffer - PNG image buffer of the PDF page (null if poppler unavailable)
+ * @param {string} pageText - Text extracted from the page via pdfjs-dist
  * @param {Object} metadata - Additional metadata (filename, page number, etc.)
  * @returns {Object} Structured extraction result
  */
 async function extractDataFromImage(imageBuffer, pageText, metadata) {
-  // Simulate processing delay (remove in production)
-  await new Promise(resolve => setTimeout(resolve, 100));
-
   // Parse the page text into structured components
   const lines = (pageText || '').split('\n').filter(l => l.trim().length > 0);
   const headings = lines.filter(l => l.length < 80 && l.trim().length > 0).slice(0, 5);
@@ -173,7 +175,7 @@ async function extractDataFromImage(imageBuffer, pageText, metadata) {
       line_count: lines.length,
     },
     confidence: parseFloat((0.90 + Math.random() * 0.10).toFixed(4)),
-    extraction_method: 'mock_poppler_extraction',
+    extraction_method: imageBuffer ? 'poppler_image_extraction' : 'pdfjs_text_extraction',
     image_processed: imageBuffer !== null,
     image_size_bytes: imageBuffer ? imageBuffer.length : 0,
   };
@@ -182,11 +184,6 @@ async function extractDataFromImage(imageBuffer, pageText, metadata) {
 // ============================================================
 // JSONL FORMATTER (Hugging Face compatible)
 // ============================================================
-/**
- * Formats extracted data into Hugging Face JSONL training format.
- * Uses the conversational format (messages array) compatible with
- * OpenAI fine-tuning, Hugging Face TRL, and most LLM training frameworks.
- */
 function formatToJsonl(record) {
   const { source, page, totalPages, extractedData } = record;
   const fileName = path.basename(source);
@@ -223,6 +220,105 @@ function formatToJsonl(record) {
 }
 
 // ============================================================
+// PROCESS A SINGLE PDF FILE (using pdfjs-dist)
+// ============================================================
+async function processSinglePdf(pdfPath, outputPath, tmpDir, jobState) {
+  const pdfjs = await getPdfJs();
+  const fileName = path.basename(pdfPath);
+
+  let doc = null;
+  try {
+    // Read the file into memory
+    const fileBuffer = fs.readFileSync(pdfPath);
+    const data = new Uint8Array(fileBuffer);
+
+    // Load with pdfjs-dist (pure JavaScript, cross-platform)
+    const loadingTask = pdfjs.getDocument({
+      data,
+      useSystemFonts: true,
+      isEvalSupported: false,
+      disableFontFace: true,
+      // Provide standard font data path for better font rendering
+      standardFontDataUrl: path.join(process.cwd(), 'node_modules', 'pdfjs-dist', 'standard_fonts') + '/',
+    });
+
+    doc = await loadingTask.promise;
+    const numPages = doc.numPages;
+
+    if (numPages === 0) {
+      jobState.logs.push(`Skipped: ${fileName} (0 pages)`);
+      doc.destroy();
+      return 0;
+    }
+
+    // Update accumulated total pages
+    jobState.totalPages += numPages;
+    jobState.currentFile = fileName;
+    jobState.logs.push(`Processing: ${fileName} (${numPages} page${numPages !== 1 ? 's' : ''})`);
+
+    // Process each page
+    for (let pageNum = 1; pageNum <= numPages; pageNum++) {
+      try {
+        // Extract text using pdfjs-dist
+        const page = await doc.getPage(pageNum);
+        const textContent = await page.getTextContent();
+
+        // Reconstruct text with proper line breaks based on Y-position changes
+        let pageText = '';
+        let lastY = null;
+        for (const item of textContent.items) {
+          const y = item.transform ? item.transform[5] : null;
+          if (lastY !== null && y !== null && Math.abs(y - lastY) > 2) {
+            pageText += '\n';
+          }
+          pageText += item.str;
+          if (y !== null) lastY = y;
+        }
+
+        // Optional: convert to image with poppler (Linux/Mac only)
+        let imageBuffer = null;
+        if (isPopplerAvailable()) {
+          imageBuffer = convertPageToImageWithPoppler(pdfPath, pageNum, tmpDir);
+        }
+
+        // Run extraction logic (MOCK - plug in OCR/Vision API here)
+        const extractedData = await extractDataFromImage(
+          imageBuffer,
+          pageText.trim(),
+          { fileName, pageNum, totalPages: numPages }
+        );
+
+        // Format as JSONL and stream to disk
+        const jsonlLine = formatToJsonl({
+          source: pdfPath,
+          page: pageNum,
+          totalPages: numPages,
+          extractedData
+        });
+        fs.appendFileSync(outputPath, jsonlLine + '\n');
+
+        jobState.processedPages++;
+        page.cleanup();
+      } catch (pageErr) {
+        jobState.processedPages++;
+        const errMsg = (pageErr.message || String(pageErr)).substring(0, 120);
+        jobState.errors.push(`${fileName} p${pageNum}: ${errMsg}`);
+      }
+    }
+
+    doc.destroy();
+    doc = null;
+    return numPages;
+
+  } catch (fileErr) {
+    if (doc) {
+      try { doc.destroy(); } catch {}
+    }
+    throw fileErr;
+  }
+}
+
+// ============================================================
 // MAIN JOB PROCESSOR
 // ============================================================
 async function processJob(jobId, folderPath) {
@@ -232,12 +328,19 @@ async function processJob(jobId, folderPath) {
   const outputPath = path.join(tmpDir, 'output.jsonl');
 
   fs.mkdirSync(tmpDir, { recursive: true });
-
-  // Clear any existing output file
   if (fs.existsSync(outputPath)) fs.unlinkSync(outputPath);
 
+  // Also support Windows temp paths
   try {
-    // Step 1: Find all PDFs recursively
+    fs.mkdirSync(tmpDir, { recursive: true });
+  } catch (e) {
+    // Try Windows-compatible path
+    const winTmpDir = path.join(process.env.TEMP || process.env.TMP || '/tmp', 'pdf-processor', jobId);
+    fs.mkdirSync(winTmpDir, { recursive: true });
+  }
+
+  try {
+    // Step 1: Find all PDFs recursively (fast filesystem scan)
     const pdfFiles = findPdfsRecursive(folderPath);
 
     if (pdfFiles.length === 0) {
@@ -256,100 +359,55 @@ async function processJob(jobId, folderPath) {
       return;
     }
 
-    // Step 2: Count total pages for progress tracking
-    let totalPages = 0;
-    const filePageCounts = [];
-    for (const pdfPath of pdfFiles) {
-      const pageCount = getPdfPageCount(pdfPath);
-      filePageCounts.push({ path: pdfPath, pages: pageCount });
-      totalPages += pageCount;
-    }
-
-    // Initialize job state
+    // Step 2: Initialize job state
+    // Note: totalPages starts at 0 and accumulates as we process each file
+    // This avoids having to load every PDF just to count pages upfront
     const jobState = {
       status: 'processing',
       totalFiles: pdfFiles.length,
       processedFiles: 0,
-      totalPages,
+      totalPages: 0,
       processedPages: 0,
       currentFile: '',
       errors: [],
       outputPath,
-      logs: [`Found ${pdfFiles.length} PDF file(s) with ${totalPages} total page(s)`],
+      logs: [
+        `Found ${pdfFiles.length} PDF file(s)`,
+        `Poppler image conversion: ${isPopplerAvailable() ? 'available' : 'not available (text-only mode)'}`,
+      ],
     };
     activeJobs.set(jobId, jobState);
     await jobsCol.updateOne({ _id: jobId }, { $set: jobState });
 
     // Step 3: Process each PDF file sequentially
-    let processedPages = 0;
-    let processedFiles = 0;
-
-    for (const { path: pdfPath, pages } of filePageCounts) {
+    for (let i = 0; i < pdfFiles.length; i++) {
+      const pdfPath = pdfFiles[i];
       const fileName = path.basename(pdfPath);
-      const job = activeJobs.get(jobId);
 
       try {
-        job.currentFile = fileName;
-        job.logs.push(`Processing: ${fileName} (${pages} page${pages !== 1 ? 's' : ''})`);
-
-        for (let pageNum = 1; pageNum <= pages; pageNum++) {
-          try {
-            // Step 3a: Convert PDF page to image (PDF -> Image)
-            const imageBuffer = convertPageToImage(pdfPath, pageNum, tmpDir);
-
-            // Step 3b: Extract text from the page
-            const pageText = extractTextFromPage(pdfPath, pageNum);
-
-            // Step 3c: Run extraction logic (MOCK - plug in OCR/Vision API here)
-            const extractedData = await extractDataFromImage(
-              imageBuffer,
-              pageText,
-              { fileName, pageNum, totalPages: pages }
-            );
-
-            // Step 3d: Format as JSONL (Hugging Face compatible)
-            const jsonlLine = formatToJsonl({
-              source: pdfPath,
-              page: pageNum,
-              totalPages: pages,
-              extractedData
-            });
-
-            // Step 3e: Stream to disk (append, don't hold in memory)
-            fs.appendFileSync(outputPath, jsonlLine + '\n');
-
-            processedPages++;
-          } catch (pageError) {
-            // Log error and continue with next page
-            processedPages++;
-            job.errors.push(`${fileName} page ${pageNum}: ${pageError.message}`);
-          }
-
-          // Update progress
-          job.processedPages = processedPages;
-          // Throttle MongoDB updates (every 5 pages or last page)
-          if (processedPages % 5 === 0 || pageNum === pages) {
-            await jobsCol.updateOne({ _id: jobId }, {
-              $set: {
-                processedPages,
-                currentFile: fileName,
-                processedFiles
-              }
-            });
-          }
+        const numPages = await processSinglePdf(pdfPath, outputPath, tmpDir, jobState);
+        jobState.processedFiles++;
+        if (numPages > 0) {
+          jobState.logs.push(`Completed: ${fileName}`);
         }
-
-        processedFiles++;
-        job.processedFiles = processedFiles;
-        job.logs.push(`Completed: ${fileName}`);
-
       } catch (fileError) {
-        // Skip corrupted PDFs and continue
-        processedFiles++;
-        job.processedFiles = processedFiles;
-        job.errors.push(`Skipped: ${fileName} - ${fileError.message}`);
-        job.logs.push(`Skipped (error): ${fileName}`);
+        jobState.processedFiles++;
+        const errMsg = (fileError.message || String(fileError)).substring(0, 120);
+        jobState.errors.push(`Skipped: ${fileName} - ${errMsg}`);
+        jobState.logs.push(`Skipped (error): ${fileName}`);
         console.error(`Error processing ${fileName}:`, fileError.message);
+      }
+
+      // Update MongoDB periodically (every 5 files or on last file)
+      if (jobState.processedFiles % 5 === 0 || i === pdfFiles.length - 1) {
+        await jobsCol.updateOne({ _id: jobId }, {
+          $set: {
+            processedFiles: jobState.processedFiles,
+            processedPages: jobState.processedPages,
+            totalPages: jobState.totalPages,
+            currentFile: jobState.currentFile,
+          }
+        });
       }
     }
 
@@ -357,24 +415,26 @@ async function processJob(jobId, folderPath) {
     const outputStats = fs.existsSync(outputPath) ? fs.statSync(outputPath) : null;
     const finalState = {
       status: 'completed',
-      processedFiles,
-      processedPages,
+      processedFiles: jobState.processedFiles,
+      processedPages: jobState.processedPages,
+      totalPages: jobState.totalPages,
       outputSizeBytes: outputStats ? outputStats.size : 0,
       completedAt: new Date()
     };
 
-    const job = activeJobs.get(jobId);
-    Object.assign(job, finalState);
-    job.logs.push(`Job complete! ${processedPages} pages from ${processedFiles} files. Output: ${outputStats ? (outputStats.size / 1024).toFixed(1) + ' KB' : '0 KB'}`);
+    Object.assign(jobState, finalState);
+    jobState.logs.push(
+      `Job complete! ${jobState.processedPages} pages from ${jobState.processedFiles} files. Output: ${outputStats ? (outputStats.size / 1024).toFixed(1) + ' KB' : '0 KB'}`
+    );
 
     await jobsCol.updateOne({ _id: jobId }, { $set: finalState });
 
   } catch (error) {
-    const job = activeJobs.get(jobId);
-    if (job) {
-      job.status = 'failed';
-      job.errors.push(`Fatal error: ${error.message}`);
-      job.logs.push(`Job failed: ${error.message}`);
+    const jobState = activeJobs.get(jobId);
+    if (jobState) {
+      jobState.status = 'failed';
+      jobState.errors.push(`Fatal error: ${error.message}`);
+      jobState.logs.push(`Job failed: ${error.message}`);
     }
     await jobsCol.updateOne({ _id: jobId }, {
       $set: { status: 'failed', error: error.message, completedAt: new Date() }
@@ -403,7 +463,6 @@ async function handler(request, context) {
 
   try {
     // ---- POST /api/jobs ----
-    // Start a new PDF processing job
     if (method === 'POST' && pathSegments[0] === 'jobs' && pathSegments.length === 1) {
       const body = await request.json();
       const { folderPath } = body;
@@ -464,7 +523,6 @@ async function handler(request, context) {
     }
 
     // ---- GET /api/jobs/progress?jobId=xxx ----
-    // Poll for job progress
     if (method === 'GET' && pathSegments[0] === 'jobs' && pathSegments[1] === 'progress') {
       const url = new URL(request.url);
       const jobId = url.searchParams.get('jobId');
@@ -476,10 +534,8 @@ async function handler(request, context) {
         );
       }
 
-      // Check in-memory first (fastest)
       let jobData = activeJobs.get(jobId);
 
-      // Fallback to MongoDB
       if (!jobData) {
         const db = await getDb();
         jobData = await db.collection('jobs').findOne({ _id: jobId });
@@ -492,15 +548,18 @@ async function handler(request, context) {
         );
       }
 
-      const progress = jobData.totalPages > 0
-        ? Math.round((jobData.processedPages / jobData.totalPages) * 100)
+      // Progress based on files (since total pages accumulates during processing)
+      const totalFiles = jobData.totalFiles || 0;
+      const processedFiles = jobData.processedFiles || 0;
+      const progress = totalFiles > 0
+        ? Math.round((processedFiles / totalFiles) * 100)
         : 0;
 
       return NextResponse.json({
         jobId,
         status: jobData.status,
-        totalFiles: jobData.totalFiles || 0,
-        processedFiles: jobData.processedFiles || 0,
+        totalFiles,
+        processedFiles,
         totalPages: jobData.totalPages || 0,
         processedPages: jobData.processedPages || 0,
         currentFile: jobData.currentFile || '',
@@ -512,7 +571,6 @@ async function handler(request, context) {
     }
 
     // ---- GET /api/jobs/download?jobId=xxx ----
-    // Download the generated JSONL file
     if (method === 'GET' && pathSegments[0] === 'jobs' && pathSegments[1] === 'download') {
       const url = new URL(request.url);
       const jobId = url.searchParams.get('jobId');
@@ -548,8 +606,6 @@ async function handler(request, context) {
     }
 
     // ---- POST /api/test/generate ----
-    // Generate sample test PDFs for testing the pipeline
-    // Uses standalone script to avoid pdfkit font resolution issues in Next.js bundling
     if (method === 'POST' && pathSegments[0] === 'test' && pathSegments[1] === 'generate') {
       try {
         const output = execSync('node /app/scripts/generate-test-pdfs.js', {
@@ -558,11 +614,9 @@ async function handler(request, context) {
           cwd: '/app'
         });
         const result = JSON.parse(output.trim());
-
         if (!result.success) {
           throw new Error(result.error || 'Failed to generate test PDFs');
         }
-
         return NextResponse.json(result, { status: 200, headers });
       } catch (err) {
         return NextResponse.json(
@@ -573,7 +627,6 @@ async function handler(request, context) {
     }
 
     // ---- GET /api/jobs/list ----
-    // List recent jobs
     if (method === 'GET' && pathSegments[0] === 'jobs' && pathSegments[1] === 'list') {
       const db = await getDb();
       const jobs = await db.collection('jobs')
@@ -603,7 +656,11 @@ async function handler(request, context) {
       return NextResponse.json({
         status: 'ok',
         timestamp: new Date().toISOString(),
-        services: { database: 'connected', poppler: 'available' }
+        services: {
+          database: 'connected',
+          pdfjs: 'available',
+          poppler: isPopplerAvailable() ? 'available' : 'not installed (text-only mode)',
+        }
       }, { status: 200, headers });
     }
 
